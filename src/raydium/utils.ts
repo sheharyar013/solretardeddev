@@ -17,53 +17,77 @@ import {
   SPL_ACCOUNT_LAYOUT,
 } from '@raydium-io/raydium-sdk';
 import { TOKEN_2022_PROGRAM_ID } from '@solana/spl-token';
-import { Keypair, LAMPORTS_PER_SOL, PublicKey, Connection } from '@solana/web3.js';
+import { Connection, Keypair, LAMPORTS_PER_SOL, PublicKey } from '@solana/web3.js';
 
 dotenv.config();
 
+// File path for cached market IDs
 const MARKET_ID_FILE_PATH = path.resolve(__dirname, 'marketIDs.json');
-export const connection = new Connection(String(process.env.QUICKNODE_URL), "finalized");
+
+const testConnection = async () => {
+  const version = await connection.getVersion();
+  console.log("Solana RPC version:", version);
+};
+
+console.log("-------------------> testConnection", testConnection);
+
+
+// Solana connection
+export const connection = new Connection(String(process.env.HELIUS_API_URL), 'finalized');
 
 // Initialize marketIDs file if it doesn't exist
 if (!fs.existsSync(MARKET_ID_FILE_PATH)) {
   fs.writeFileSync(MARKET_ID_FILE_PATH, JSON.stringify([]));
 }
 
-// Utility functions for reading and writing marketIDs to the file
+// Utility functions to manage market ID cache
 const readMarketIDsFromFile = (): string[] => JSON.parse(fs.readFileSync(MARKET_ID_FILE_PATH, 'utf-8'));
 
 const writeMarketIDToFile = (marketId: string): void => {
   const existingMarketIDs = readMarketIDsFromFile();
+  console.log("Existing Market IDs:", existingMarketIDs);
   if (!existingMarketIDs.includes(marketId)) {
-    existingMarketIDs.push(marketId);
-    fs.writeFileSync(MARKET_ID_FILE_PATH, JSON.stringify(existingMarketIDs, null, 2));
+      existingMarketIDs.push(marketId);
+      console.log("Writing new Market ID:", marketId);
+      fs.writeFileSync(MARKET_ID_FILE_PATH, JSON.stringify(existingMarketIDs, null, 2));
   }
 };
 
-// Cron job to update marketIDs every 30 seconds
-cron.schedule("*/30 * * * * *", async () => {
-  console.log("⏳ Running cron job to update marketIDs...");
-  await fetchAndStoreMarketIDs();
-});
-
-// Function to fetch new marketIDs
+// Fetch market IDs and update cache
 const fetchAndStoreMarketIDs = async (): Promise<void> => {
   try {
-    const marketData = await Market.findAccountsByMints(
-      connection,
-      new PublicKey("baseMintPublicKey"),
-      new PublicKey("quoteMintPublicKey"),
-      MAINNET_PROGRAM_ID.OPENBOOK_MARKET
-    );
+      console.log("Fetching market accounts...");
+      const marketData = await Market.findAccountsByMints(
+          connection,
+          new PublicKey('So11111111111111111111111111111111111111112'),
+          new PublicKey('Es9vMFrzaCERzR1zFGsBi7K2CUZNCcUwd1GCUyRftRKS'),
+          MAINNET_PROGRAM_ID.OPENBOOK_MARKET
+      );
 
-    marketData.forEach(({ publicKey }) => writeMarketIDToFile(publicKey.toString()));
-    console.log("🏆 MarketIDs updated successfully.");
+      console.log("Market data fetched:", marketData);
+
+      if (marketData.length === 0) {
+          console.warn("No market data found!");
+          return;
+      }
+
+      marketData.forEach(({ publicKey }) => writeMarketIDToFile(publicKey.toString()));
+      console.log('🏆 Market IDs updated successfully.');
   } catch (error) {
-    console.error("❗ Error fetching marketIDs:", error);
+      console.error('❗ Error fetching market IDs:', error);
   }
 };
 
-// loadPoolKeys_from_market function using cached marketIDs
+// Schedule a cron job to update market IDs every 30 seconds
+cron.schedule('*/30 * * * * *', async () => {
+  console.log('⏳ Running cron job to update market IDs...');
+  const start = Date.now();
+  await fetchAndStoreMarketIDs();
+  console.log(`Cron job completed in ${Date.now() - start} ms.`);
+});
+
+
+// Load pool keys from cached market IDs
 export const loadPoolKeys_from_market = async (
   base: string,
   baseDecimal: number,
@@ -71,12 +95,14 @@ export const loadPoolKeys_from_market = async (
   quoteDecimal: number
 ): Promise<LiquidityPoolKeys | undefined> => {
   const cachedMarketIDs = readMarketIDsFromFile();
+
   if (cachedMarketIDs.length > 0) {
-    console.log("📂 Using cached marketIDs.");
-    const marketId = cachedMarketIDs[0]; // Use the first cached ID as an example
+    console.log('📂 Using cached market IDs.');
+    const marketId = cachedMarketIDs[0];
     const marketInfo = await connection.getAccountInfo(new PublicKey(marketId));
     if (marketInfo) {
       const decodedInfo = MARKET_STATE_LAYOUT_V3.decode(marketInfo.data);
+
       return {
         ...Liquidity.getAssociatedPoolKeys({
           version: 4,
@@ -96,36 +122,30 @@ export const loadPoolKeys_from_market = async (
         marketEventQueue: decodedInfo.eventQueue,
       };
     }
-  } else {
-    console.log("⏳ Fetching marketID as no cache is available.");
-    await fetchAndStoreMarketIDs();
-    return loadPoolKeys_from_market(base, baseDecimal, quote, quoteDecimal); // Retry with updated cache
   }
-  return undefined;
+
+  console.log('⏳ Fetching market ID as no cache is available.');
+  await fetchAndStoreMarketIDs();
+  return loadPoolKeys_from_market(base, baseDecimal, quote, quoteDecimal); // Retry with updated cache
 };
 
-const calcAmountOut = async (poolKeys: LiquidityPoolKeys, rawAmountIn: number, swapInDirection: boolean, slippage: number) => {
-  const poolInfo = await Liquidity.fetchInfo({ connection, poolKeys })
+// Function to calculate token amounts and price details
+export const calcAmountOut = async (
+  poolKeys: LiquidityPoolKeys,
+  rawAmountIn: number,
+  swapInDirection: boolean,
+  slippage: number
+) => {
+  const poolInfo = await Liquidity.fetchInfo({ connection, poolKeys });
 
-  let currencyInMint = poolKeys.baseMint
-  let currencyInDecimals = poolInfo.baseDecimals
-  let currencyOutMint = poolKeys.quoteMint
-  let currencyOutDecimals = poolInfo.quoteDecimals
+  const direction = swapInDirection
+    ? { currencyInMint: poolKeys.baseMint, currencyInDecimals: poolInfo.baseDecimals, currencyOutMint: poolKeys.quoteMint, currencyOutDecimals: poolInfo.quoteDecimals }
+    : { currencyInMint: poolKeys.quoteMint, currencyInDecimals: poolInfo.quoteDecimals, currencyOutMint: poolKeys.baseMint, currencyOutDecimals: poolInfo.baseDecimals };
 
-  if (!swapInDirection) {
-    currencyInMint = poolKeys.quoteMint
-    currencyInDecimals = poolInfo.quoteDecimals
-    currencyOutMint = poolKeys.baseMint
-    currencyOutDecimals = poolInfo.baseDecimals
-  }
-
-  const currencyIn = new Token(TOKEN_PROGRAM_ID, currencyInMint, currencyInDecimals)
-  const amountIn = new TokenAmount(currencyIn, rawAmountIn, false)
-  const currencyOut = new Token(TOKEN_PROGRAM_ID, currencyOutMint, currencyOutDecimals)
-  // const slippage = new Percent(20, 100) // 5% slippage
-  const _slippage = new Percent(slippage, 100) // 5% slippage
-
-  console.log("🌐 *** Slippage ***", _slippage)
+  const currencyIn = new Token(TOKEN_PROGRAM_ID, direction.currencyInMint, direction.currencyInDecimals);
+  const amountIn = new TokenAmount(currencyIn, rawAmountIn, false);
+  const currencyOut = new Token(TOKEN_PROGRAM_ID, direction.currencyOutMint, direction.currencyOutDecimals);
+  const _slippage = new Percent(slippage, 100);
 
   const { amountOut, minAmountOut, currentPrice, executionPrice, priceImpact, fee } = Liquidity.computeAmountOut({
     poolKeys,
@@ -133,18 +153,18 @@ const calcAmountOut = async (poolKeys: LiquidityPoolKeys, rawAmountIn: number, s
     amountIn,
     currencyOut,
     slippage: _slippage,
-  })
+  });
 
   return {
     amountIn,
-    amountOut: amountOut.toFixed(currencyOutDecimals),
+    amountOut: amountOut.toFixed(direction.currencyOutDecimals),
     minAmountOut,
     currentPrice,
     executionPrice,
     priceImpact,
     fee,
-  }
-}
+  };
+};
 
 export const getSwapTransaction = async (
   payer: any,
@@ -252,7 +272,7 @@ export const getTokenInfo = async (addr: string) => {
     .pdas()
     .metadata({ mint: mintAddress });
 
-  console.log("connect:***********", process.env.QUICKNODE_URL)
+  console.log("connect:***********", process.env.HELIUS_API_URL)
 
   const metadataAccountInfo = await connection.getAccountInfo(metadataAccount);
 

@@ -31,8 +31,10 @@
     "bs58": "^5.0.0",
     "dotenv": "^16.4.5",
     "fs-extra": "^11.2.0",
+    "helius-sdk": "^1.4.0",
     "jito-ts": "^4.1.1",
     "node-cron": "^3.0.3",
-    "rpc-websockets": "7.10.0"
+    "rpc-websockets": "7.10.0",
+    "ws": "^8.18.0"
   }
 }
